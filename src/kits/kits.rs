@@ -42,9 +42,22 @@ const LWB_1ST_REAR: &str = "ACTTGCCTGTCGCTCTATCTTC";
 const LWB_2ND_FRONT: &str = "CCGTGAC";
 const LWB_2ND_REAR: &str = "TTTCTGTTGGTGCTGATATTGC";
 
-// 16s_mix_F
+// SQK-MAB114.24, front shortened from dorado's MAB_FRONT as the read start is often noisy
 const MAB_FRONT: &str = "TTTAACC";
-const MAB_REAR: &str = "CCATATCCGTGTC";
+const MAB_REAR: &str = "CCATATCCGTGTCGCCCTT";
+// The amplicon primer directly follows MAB_REAR, from
+// https://nanoporetech.com/api/assets/f/196663/x/70586fe186/sqk_mab114_24_primer_sequences_16s_its.pdf
+pub const MAB_REAR_16S_F: &str = "CCATATCCGTGTCGCCCTTAGRGTTYGATYMTGGCTCAG"; // 16S_mix_F
+pub const MAB_REAR_16S_R: &str = "CCATATCCGTGTCGCCCTTSGGYTACCTTGTTACGACTT"; // 16S_mix_R
+pub const MAB_REAR_ITS1: &str = "CCATATCCGTGTCGCCCTTTCYGTWGGTGAACCWGCRG"; // ITS1, ITS1_Fus, ITS1_Mal
+pub const MAB_REAR_ITS4: &str = "CCATATCCGTGTCGCCCTTTCCTCCGCTTATTRATATGC"; // ITS4, ITS4_Pyt
+
+// A second barcode cassette (concatenated amplicons) or fold-back (read continues on the
+// complement strand) shows up roughly one amplicon length after the first barcode.
+// 16S window from a SQK-MAB114.24 16S run (peaks at ~1470 and ~1560), ITS window
+// covers the length range of ITS1-ITS4 amplicons
+const MAB_16S_SPLIT_WINDOW: &str = "1350..1750";
+const MAB_ITS_SPLIT_WINDOW: &str = "350..1150";
 
 // Storing all options like dorado takes up too much of the binary so
 // we just create views as subsets of the full list
@@ -185,7 +198,7 @@ static SINGLE_LABEL_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLock::new(||
         // From safe
         pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
         pattern_from_str!("Ftag[fw, ?1, @left(0..250)]__Ftag[fw, ?1, @prev_left(0..250), >>]"),
-        // Slightly more risky (ignores that both labels should be identical and just uses left one)
+        // Slightly more risky (ignores that both labels should be identical and uses the inner one, with >>)
         pattern_from_str!("Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]"),
         // Would be odd to have barcode on the right, but can still assume left is fine and extract region within
         pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Ftag[<<, fw, *, @right(0..250)]"),
@@ -287,6 +300,55 @@ static DOUBLE_DIFFERENT_LABEL_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLo
     ]
 });
 
+// Single label patterns plus splitting reads where a second cassette shows up mid read
+// one amplicon length (`window`) after the first barcode
+fn mab_split_patterns(window: &str, maximize: bool) -> Vec<Pattern> {
+    let mut patterns = vec![
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
+        pattern_from_str!("Ftag[fw, ?1, @left(0..250)]__Ftag[fw, ?1, @prev_left(0..250), >>]"),
+    ];
+    if maximize {
+        patterns.extend([
+            pattern_from_str!("Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]"),
+            pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Ftag[<<, fw, *, @right(0..250)]"),
+            pattern_from_str!(
+                "Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]__Ftag[<<, fw, *, @right(0..250)]"
+            ),
+        ]);
+    }
+    // Two amplicons, cut groups split them so each is written to the folder of its own barcode
+    let split =
+        format!("Ftag[fw, *, @left(0..250), >>1]__Ftag[<<1, fw, *, @prev_left({window}), >>2]");
+    // Second barcode undetected, or a fold-back (no cassette, the read continues on the
+    // complement strand), only keep the first amplicon
+    let keep_first =
+        format!("Ftag[fw, *, @left(0..250), >>1]__Fflank[<<1, fw, *, @prev_left({window})]");
+    patterns.push(pattern_from_str!(&split));
+    patterns.push(pattern_from_str!(&keep_first));
+    patterns
+}
+
+static MAB_16S_PATTERNS_SAFE: LazyLock<Vec<Pattern>> =
+    LazyLock::new(|| mab_split_patterns(MAB_16S_SPLIT_WINDOW, false));
+static MAB_16S_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> =
+    LazyLock::new(|| mab_split_patterns(MAB_16S_SPLIT_WINDOW, true));
+static MAB_ITS_PATTERNS_SAFE: LazyLock<Vec<Pattern>> =
+    LazyLock::new(|| mab_split_patterns(MAB_ITS_SPLIT_WINDOW, false));
+static MAB_ITS_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> =
+    LazyLock::new(|| mab_split_patterns(MAB_ITS_SPLIT_WINDOW, true));
+
+fn mab_16s_patterns_safe() -> &'static [Pattern] {
+    &MAB_16S_PATTERNS_SAFE
+}
+fn mab_16s_patterns_maximize() -> &'static [Pattern] {
+    &MAB_16S_PATTERNS_MAXIMIZE
+}
+fn mab_its_patterns_safe() -> &'static [Pattern] {
+    &MAB_ITS_PATTERNS_SAFE
+}
+fn mab_its_patterns_maximize() -> &'static [Pattern] {
+    &MAB_ITS_PATTERNS_MAXIMIZE
+}
 fn single_label_patterns_safe() -> &'static [Pattern] {
     &SINGLE_LABEL_PATTERNS_SAFE
 }
@@ -514,19 +576,62 @@ static TEMPLATES_VMK4: &[TemplateSpec] = &[TemplateSpec {
     template_type: TemplateType::Default,
 }];
 
-static TEMPLATES_MAB: &[TemplateSpec] = &[TemplateSpec {
-    parts: &[MAB_FRONT, "{BAR}", MAB_REAR],
-    barcodes: LabelRange::new("AB01", "AB24"),
-    barcode_type: TemplateBarcodeType::Left,
-    template_type: TemplateType::Default,
-}];
+const fn mab_template(parts: &'static [&'static str]) -> TemplateSpec {
+    TemplateSpec {
+        parts,
+        barcodes: LabelRange::new("AB01", "AB24"),
+        barcode_type: TemplateBarcodeType::Left,
+        template_type: TemplateType::Default,
+    }
+}
 
+// The primer extends the short flank so noisy read starts still anchor,
+// MAB_REAR alone is a primer agnostic fallback
+static TEMPLATES_MAB_16S: &[TemplateSpec] = &[
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_16S_F]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_16S_R]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR]),
+];
+
+static TEMPLATES_MAB_ITS: &[TemplateSpec] = &[
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_ITS1]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_ITS4]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR]),
+];
+
+static TEMPLATES_MAB: &[TemplateSpec] = &[
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_16S_F]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_16S_R]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_ITS1]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR_ITS4]),
+    mab_template(&[MAB_FRONT, "{BAR}", MAB_REAR]),
+];
+
+// SQK-MAB114.24 is used for 16S and ITS amplicons, which need different split windows.
+// `barbell kit` detects the amplicon from the reads, the combined kit is the fallback
+// for mixed runs and does not split reads
 const KIT_MAB: KitConfig = KitConfig::new(
     "MAB",
     SINGLE_LABEL_CONFIG,
     single_label_patterns_safe,
     single_label_patterns_maximize,
     TEMPLATES_MAB,
+);
+
+const KIT_MAB_16S: KitConfig = KitConfig::new(
+    "MAB-16S",
+    SINGLE_LABEL_CONFIG,
+    mab_16s_patterns_safe,
+    mab_16s_patterns_maximize,
+    TEMPLATES_MAB_16S,
+);
+
+const KIT_MAB_ITS: KitConfig = KitConfig::new(
+    "MAB-ITS",
+    SINGLE_LABEL_CONFIG,
+    mab_its_patterns_safe,
+    mab_its_patterns_maximize,
+    TEMPLATES_MAB_ITS,
 );
 
 const KIT_16S: KitConfig = KitConfig::new(
@@ -750,6 +855,8 @@ pub fn get_kit_info(kit: &str) -> KitConfig {
         "VSK-VMK004" => KIT_VMK4,
         // MAB
         "SQK-MAB114-24" => KIT_MAB,
+        "SQK-MAB114-24-16S" => KIT_MAB_16S,
+        "SQK-MAB114-24-ITS" => KIT_MAB_ITS,
         // if name contains "." try to replace it and run again
         _ => {
             if kit.contains(".") {
@@ -1231,6 +1338,87 @@ mod tests {
             "BC12A",
         ];
         assert_eq!(barcodes, expected);
+    }
+
+    #[test]
+    fn mab_templates_include_amplicon_primers() {
+        use crate::annotate::barcodes::BarcodeGroup;
+
+        for (kit, n_templates) in [
+            ("SQK-MAB114.24", 5),
+            ("SQK-MAB114-24-16S", 3),
+            ("SQK-MAB114-24-ITS", 3),
+        ] {
+            let groups = BarcodeGroup::new_from_kit(kit, false);
+            assert_eq!(groups.len(), n_templates);
+            for group in &groups {
+                assert_eq!(group.barcodes.len(), 24);
+                assert_eq!(group.barcodes[0].label, "AB01");
+            }
+            // Last template is the primer agnostic fallback
+            assert_eq!(groups[n_templates - 1].flank_suffix, MAB_REAR.as_bytes());
+        }
+        // Masked barcode followed by the rear flank and the primer
+        let groups = BarcodeGroup::new_from_kit("SQK-MAB114-24-16S", false);
+        let expected = format!("{MAB_FRONT}{}{MAB_REAR_16S_F}", "N".repeat(24));
+        assert_eq!(groups[0].flank, expected.as_bytes());
+        let groups = BarcodeGroup::new_from_kit("SQK-MAB114-24-ITS", false);
+        let expected = format!("{MAB_FRONT}{}{MAB_REAR_ITS1}", "N".repeat(24));
+        assert_eq!(groups[0].flank, expected.as_bytes());
+    }
+
+    #[test]
+    fn mab_split_window_depends_on_amplicon() {
+        use crate::annotate::barcodes::BarcodeType;
+        use crate::annotate::searcher::BarbellMatch;
+        use crate::filter::pattern::match_pattern;
+        use sassy::Strand;
+
+        // Two 16S amplicons from different samples in one read
+        let bar = |start: usize, label: &str| {
+            BarbellMatch::new(
+                start,
+                start + 24,
+                start - 7,
+                start + 63,
+                7,
+                31,
+                BarcodeType::Ftag,
+                0,
+                0,
+                label.to_string(),
+                Strand::Fwd,
+                3100,
+                "read".to_string(),
+                0,
+                None,
+            )
+        };
+        let split_groups = |kit: &str, matches: &[BarbellMatch]| {
+            (get_kit_info(kit).safe_patterns)()
+                .iter()
+                .filter(|p| p.elements.len() == matches.len())
+                .map(|p| match_pattern(matches, p))
+                .find(|(is_match, _)| *is_match)
+                .map(|(_, cuts)| cuts.iter().map(|(_, cut)| cut.group_id).collect::<Vec<_>>())
+        };
+
+        // Second 16S amplicon ~1.5kb after the first, only split by the 16S kit
+        let matches = vec![bar(40, "AB05"), bar(1600, "AB09")];
+        assert_eq!(
+            split_groups("SQK-MAB114-24-16S", &matches),
+            Some(vec![1, 1, 2])
+        );
+        assert_eq!(split_groups("SQK-MAB114-24-ITS", &matches), None);
+        assert_eq!(split_groups("SQK-MAB114-24", &matches), None);
+
+        // Second ITS amplicon ~700bp after the first, only split by the ITS kit
+        let matches = vec![bar(40, "AB05"), bar(800, "AB09")];
+        assert_eq!(
+            split_groups("SQK-MAB114-24-ITS", &matches),
+            Some(vec![1, 1, 2])
+        );
+        assert_eq!(split_groups("SQK-MAB114-24-16S", &matches), None);
     }
 
     #[test]
