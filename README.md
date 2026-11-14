@@ -497,7 +497,7 @@ barbell trim -i group2_reads.tsv -r reads.fastq -o group2_trimmed
 - `flank_cost`: number of edits in the flank sequence (excluding the barcode)
 - `barcode_cost`: number of edits in the barcode region
 - `label`: label from your FASTA (or preset kit) — e.g., `BC14`, `RBK60`, etc.
-- `strand`: orientation of the match (`fw` or `rc`)
+- `strand`: orientation of the match (`Fwd` or `Rc`). Note that patterns use the shorthand `fw`/`rc` for orientation (see [Patterns](#patterns))
 - `cuts`: empty after `annotate`; populated after `filter` to inform `trim` where to cut
 
 ---
