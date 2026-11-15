@@ -129,7 +129,7 @@ pub fn demux_using_kit(fastq_files: &[PathBuf], config: &KitConfig) -> anyhow::R
     )
     .map_err(|e| anyhow!("{e}"))?;
     println!(
-        "Want to see more patterns? Run: `barbell inspect {output_folder}/annotation.tsv -n 100`"
+        "Want to see more patterns? Run: `barbell inspect -i {output_folder}/annotation.tsv -n 100`"
     );
 
     // Filter
